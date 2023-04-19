@@ -100,16 +100,24 @@
         format: navigator.gpu.getPreferredCanvasFormat(),
       }],
     },
+    depthStencil: {
+      format: "depth32float",
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    }
   });
 
   // It's easiest to specify vertex data with TypedArrays, like a Float32Array
   // You are responsible for making sure the layout of the data matches the
   // layout that you describe in the pipeline `buffers`.
   const vertexData = new Float32Array([
-  // X,  Y, Z   R, G, B, A,
-     0,  1, 1,  1, 0, 0, 1,
-    -1, -1, 1,  0, 1, 0, 1,
-     1, -1, 1,  0, 0, 1, 1,
+  // X,  Y, Z    R, G, B, A,
+     0,  1, 1,   1, 0, 0, 1,
+    -1, -1, 0,   0, 1, 0, 1,
+     1, -1, 0,   0, 0, 1, 1,
+     0, -1,1.0,  1, 1, 1, 1,
+    -1, +1,0.5,  0, 1, 1, 1,
+     1, +1,0.5,  0, 0, 1, 1,
   ]);
   const vertexBuffer = device.createBuffer({
     // Buffers are given a size in bytes at creation that can't be changed.
@@ -122,6 +130,13 @@
 
   // writeBuffer is the easiest way to TypedArray data into a buffer.
   device.queue.writeBuffer(vertexBuffer, 0, vertexData);
+
+  const depthTexture = device.createTexture({
+      size: {width: context.getCurrentTexture().width,
+            height: context.getCurrentTexture().height},
+      format: "depth32float",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
 
   // Command encoders record commands for the GPU to execute.
   const commandEncoder = device.createCommandEncoder();
@@ -136,10 +151,16 @@
       // Clear the attachment when the render pass starts.
       loadOp: 'clear',
       // The color the attachment will be cleared to.
-      clearValue: [0, 0, 0.2, 1],
+      clearValue: [0, 0, 0.4, 1],
       // When the pass is done, save the results in the attachment texture.
       storeOp: 'store',
-    }]
+    }],
+    depthStencilAttachment: {
+      view: depthTexture.createView(),
+      depthClearValue: 1,
+      depthLoadOp: "clear",
+      depthStoreOp: "store",
+    },
   });
 
   // Set the pipeline to use when drawing.
@@ -148,7 +169,7 @@
   // The `0` corresponds to the index of the `buffers` array in the pipeline.
   passEncoder.setVertexBuffer(0, vertexBuffer);
   // Draw 3 vertices using the previously set pipeline and vertex buffer.
-  passEncoder.draw(3);
+  passEncoder.draw(6);
 
   // End the render pass.
   passEncoder.end();
