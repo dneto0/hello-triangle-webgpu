@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<head><title>Hello Array - WebGPU</title></head>
+<!--body onpageshow="setup()" onpagehide="teardown()"-->
+<body>
+<script type='module'>
+  document.ctx = {
+    device: undefined,
+    inputBuffer: undefined,
+    gpuBuffer: undefined,
+    outputBuffer: undefined,
+    pipeline: undefined,
+    bindGroup: undefined,
+  }
+
+  function clear() {
+    document.getElementById("target").innerHTML  = '';
+  }
+  function write(s) {
+    document.getElementById("target").innerHTML += s + '<br/>';
+  }
+
+  const iters = 5;
+  const bufSize = iters * 4;
+
+  export const setup = async () => {
+    const ctx = document.ctx;
+    // Check for WebGPU support first by seeing if navigator.gpu exists.
+    if (!navigator.gpu) {
+      write('<b>This browser does not support WebGPU.</b>');
+      document.body.replaceChild(errorMessage, canvas);
+    }
+
+    // WebGPU apps start by getting an Adapter, which represents a physical GPU.
+    const adapter = await navigator.gpu.requestAdapter({powerPreference: "high-performance"});
+    const info = await adapter.requestAdapterInfo();
+
+    ctx.device = await adapter.requestDevice();
+
+    // Here's the buffer we'll put our initial data into.
+    // We can only read or write a buffer when it's mapped into host (CPU) memory.
+    ctx.inputBuffer = ctx.device.createBuffer({
+      size: 4,  // Number of bytes
+      usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+    });
+
+    // Create a buffer the compute shader will read and write.
+    // It will only ever be visible on the GPU.
+    ctx.gpuBuffer = ctx.device.createBuffer({
+      size: bufSize,
+      // The compute shader will use it as a "storage" buffer, for reading
+      // and writing. It will also be where we copy data into, and copy data out of.
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    // Create a buffer to copy the output to.
+    ctx.outputBuffer = ctx.device.createBuffer({
+      size: bufSize,
+      // The CPU will be able to copy into this bufer, and the CPU will be able to
+      // map it for reading.
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+
+    // Here's the compute shader.
+    const shader = ctx.device.createShaderModule({code: `
+      @group(0) @binding(0) var<storage,read_write> buf: array<f32>;
+
+      @compute @workgroup_size(1)
+      fn divider() {
+        var value: f32 = buf[0];
+        for (var i: u32 = 0; i < arrayLength(&buf); i++) {
+           buf[i] = value;
+           value = cos(value);
+        }
+      }
+    `});
+    // Create a pipeline from the shader. This puts the shader into context,
+    // and can take some time because backend code generation often happens here.
+    // There are async forms of this too.
+    ctx.pipeline = ctx.device.createComputePipeline({
+      // "auto" layout says to the layouts of resources from the resource variables
+      // used in the shader, i.e. with @group and @binding attributes.
+      layout: "auto",
+      compute: {
+        module: shader, // The shader we created earlier.
+        entryPoint: 'divider'
+      }
+    });
+    // Specify the buffer resources that we will attach to the pipeline later.
+    ctx.bindGroup = ctx.device.createBindGroup({
+     layout: ctx.pipeline.getBindGroupLayout(0),
+     // The group has just one resource, the gpuBuffer. Map to the whole buffer.
+     entries: [{binding: 0, resource: {buffer: ctx.gpuBuffer}}],
+    });
+    console.log("setup end");
+    console.log(ctx);
+  };
+
+  document.run = async () => {
+    clear();
+    const ctx = document.ctx;
+
+    // Write the input value.
+    await ctx.inputBuffer.mapAsync(GPUMapMode.WRITE);
+    const input = new Float32Array(ctx.inputBuffer.getMappedRange());
+
+    const inputStr = document.getElementById("input").value;
+    input[0] = Number(inputStr);
+    write(`input[0]: ${input[0]} '${inputStr}'`);
+
+    // Unmap the input buffer from CPU's memory, so it can be used exclusively by the GPU.
+    ctx.inputBuffer.unmap();
+
+
+    // Now record the commands to actually do the work.
+    const encoder = ctx.device.createCommandEncoder();
+    // Copy the input buffer (which must be unmapped), to the GPU buffer.
+    encoder.copyBufferToBuffer(ctx.inputBuffer, 0, ctx.gpuBuffer, 0, 4);
+    // Now prepare to record GPU compute work.
+    const computeEncoder = encoder.beginComputePass();
+      computeEncoder.setPipeline(ctx.pipeline);  // Use the pipeline we created earlier
+      computeEncoder.setBindGroup(0, ctx.bindGroup); // Attach the gpuBuffer to @group(0),@binding(0)
+      computeEncoder.dispatchWorkgroups(1); // Launch the work.
+      // That's all we'll do with this compute pipeline.
+      // This will record the compute pipeline work into 'encoder'.
+      computeEncoder.end();
+    // After the compute shader completes, copy the gpuBuffer to outputBuffer
+    encoder.copyBufferToBuffer(ctx.gpuBuffer, 0, ctx.outputBuffer, 0, bufSize);
+    // And those are all the commands.
+    const commands = encoder.finish({label: "divider"});
+
+    // All the preparatory and potentially slow work has been done.
+    // Now submit the recorded commands.  This is can go into an inner loop.
+    // *Schedule* the work to be done. It likely starts right away, but this also
+    // returns before the GPU is finished, so you can queue up more work if needed.
+    ctx.device.queue.submit([commands]);
+    // Schedule the task of mapping the output buffer back into CPU memory.
+    ctx.outputBuffer.mapAsync(GPUMapMode.READ);
+    // Wait for all queued work to finish, including the mapAsync (because the buffer was
+    // exclusively in use by the scheduled work.)
+    await ctx.device.queue.onSubmittedWorkDone();
+
+    // Get a view into the output buffer, as an array of 32-bit floats.
+    const mapped = ctx.outputBuffer.getMappedRange();
+    const outFloat = new Float32Array(mapped);
+    const outInt = new Uint32Array(mapped);
+
+    // Show the outputs.
+    write("Finished. Here are some outputs:");
+
+    for (let i=0; i < iters; i++) {
+      write(`[${i}]: 0x${outInt[i].toString(16)} ${outFloat[i]}`);
+    }
+    ctx.outputBuffer.unmap();
+  };
+
+  function teardown() {
+    ctx.device.destroy();
+  }
+
+  setup();
+</script>
+
+  Use WebGPU to compute the cosine of a number.
+  <p>
+  See also <ul>
+  <li> <a href="hello-array.html">Hello array</a><br/>
+  <li> <a href="hello-f16.html">Hello f16</a><br/>
+  </ul>
+  <hr>
+  <input type="number" id="input" value="1.0" onpageshow="setup()" onchange="document.run()"/>
+  <div id="target"></div>
+  </body>
