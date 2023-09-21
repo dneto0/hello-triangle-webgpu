@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <head><title>Hello Array - WebGPU</title></head>
 <body>
-  Use WebGPU to run a compute shader to multiply a bunch of numbers by 2.
+  Use WebGPU to run a compute shader that uses f16 to multiply a number by 0.5 a bunch of times in a row.
   <p>
   <a href='https://github.com/toji/hello-triangle-webgpu/blob/main/hello-array.html'>See the Source</a>
   <p>
@@ -10,7 +10,6 @@
   <li> <a href="hello-f16.html">Hello f16</a><br/>
   </ul>
   <hr>
-  <p>
   <div id="target"></div>
   <script type='module'>
   function write(s) {
@@ -24,34 +23,35 @@
 
   // WebGPU apps start by getting an Adapter, which represents a physical GPU.
   const adapter = await navigator.gpu.requestAdapter({powerPreference: "high-performance"});
+
+  // Check for shader-f16
+  if (adapter.features.has('shader-f16')) {
+    write("has shader-f16");
+    console.log("has shader-f16!");
+  } else {
+    write("does not have shader-f16");
+    console.log("does not have shader-f16!");
+  }
+
+  console.log([...adapter.features.values()]);
   const info = await adapter.requestAdapterInfo();
   console.log(info);
 
+  const requiredFeatures = [];
+  requiredFeatures.push('shader-f16');
+
   // From the adapter, you get a Device, which is the primary WebGPU interface.
-  const device = await adapter.requestDevice();
+  const device = await adapter.requestDevice({requiredFeatures});
 
-  // We're goint to make a big array, fill it with data, and get a compute shader
+  // We're going to make a big array, fill it with data, and get a compute shader
   // to double each entry in the array.
-  const N = 1024 * 1024;
-  // Compute shaders break down the work into chunks to be executed in parallel,
-  // called "workgroups". Let's assume we can use a workgroup of 64 invocations.
-  const workgroupSize = 64;
-  // Work is "dispatched" to a compute shader in a whole number of workgroups.
-  // Check that the work can be divided evenly.
-  if ((N % workgroupSize) != 0) {
-    throw "workgroupSize must divide N evenly, to make the dispatch logic work.";
-  }
-  const numWorkgroups = N / workgroupSize;
-
-  const bytes_per_elem = 4; // 32-bit floats take up 4 bytes each
-  const bufSize = bytes_per_elem * N;
-
-  // We'll make three buffers.
+  const iters = 30;
+  const bufSize = iters * 4;
 
   // Here's the buffer we'll put our initial data into.
   // We can only read or write a buffer when it's mapped into host (CPU) memory.
   const inputBuffer = device.createBuffer({
-    size: bufSize,  // Number of bytes
+    size: 4,  // Number of bytes
     // MAP_WRITE: the CPU can write to the bufer when the buffer is mapped,
     // COPY_SRC: we'll be able to ask the GPU to copy from this buffer to another GPU resource.
     usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
@@ -60,18 +60,8 @@
   // Get a view into the (already-mapped) buffer so we can read it like an array
   // of 32-bit floats.
   const input = new Float32Array(inputBuffer.getMappedRange());
-  for (let i = 0; i < N ; i++ ) { // Fill it with data.
-    input[i] = (i&1) ? -i : i;
-  }
-  write(`Wrote N = ${N} initial values`);
-  // Show some inputs.
-  write("Here are some inputs");
-  write(`[0]: ${input[0]}`);
-  write(`[1]: ${input[1]}`);
-  write(`[2]: ${input[2]}`);
-  write(`[3]: ${input[3]}`);
-  write(`[N-2]: ${input[N-2]}`);
-  write(`[N-1]: ${input[N-1]}<br/>`);
+  input[0] = 1.0;
+  write(`input[0]: ${input[0]}`);
 
   // Unmap the input buffer from CPU's memory, so it can be used exclusively by the GPU.
   inputBuffer.unmap();
@@ -94,27 +84,16 @@
 
   // Here's the compute shader.
   const shader = device.createShaderModule({code: `
-    // Declare a buffer variable at a specific group and binding.
-    // We'll both read and write to it, and we'll treat it as an array of 32-bit floats.
+    enable f16;
     @group(0) @binding(0) var<storage,read_write> buf: array<f32>;
 
-    // The workgroup size, used in @workgroup_size attribute on the entry point below.
-    // Set this via 'constants' at pipeline-creation time, to match what's on the API
-    // side. 
-    override workgroupSize: u32;
-
-    // Declare the compute shader.
-    // The code for shader is the work that *one* invocation does, it's already
-    // in the conceptual the "inner loop" of the parallel work load.
-    @compute @workgroup_size(workgroupSize)
-    fn doubler(@builtin(global_invocation_id) gid: vec3u) {
-      // gid is @builtin(global_invocation_id) telling us the identity
-      // of this invocation in the whole parallel workload (compute grid).
-      // Compute grids are up to 3-dimensional, so the gid is 3-dimensional.
-      // We'll launch a 1-dimensional workload, N x 1 x 1, so gid will range
-      // from 0 to N-1.
-      // Update the array entry.  gid.x is the id in the first dimension.
-      buf[gid.x] = buf[gid.x] * 2;
+    @compute @workgroup_size(1)
+    fn f16divider() {
+      var value: f16 = f16(buf[0]);
+      for (var i: u32 = 0; i < arrayLength(&buf); i++) {
+         buf[i] = f32(value);
+         value *= 0.5h;
+      }
     }
   `});
   // Create a pipeline from the shader. This puts the shader into context,
@@ -126,8 +105,7 @@
     layout: "auto",
     compute: {
       module: shader, // The shader we created earlier.
-      entryPoint: 'doubler',
-      constants: {workgroupSize: workgroupSize}, // set the 'override' in the shader.
+      entryPoint: 'f16divider'
     }
   });
   // Specify the buffer resources that we'll attach to the pipeline later.
@@ -140,19 +118,19 @@
   // Now record the commands to actually do the work.
   const encoder = device.createCommandEncoder();
   // Copy the input buffer (which must be unmapped), to the GPU buffer.
-  encoder.copyBufferToBuffer(inputBuffer, 0, gpuBuffer, 0, bufSize);
+  encoder.copyBufferToBuffer(inputBuffer, 0, gpuBuffer, 0, 4);
   // Now prepare to record GPU compute work.
   const computeEncoder = encoder.beginComputePass();
     computeEncoder.setPipeline(pipeline);  // Use the pipeline we created earlier
     computeEncoder.setBindGroup(0, bindGroup); // Attach the gpuBuffer to @group(0),@binding(0)
-    computeEncoder.dispatchWorkgroups(numWorkgroups); // Launch the work.
+    computeEncoder.dispatchWorkgroups(1); // Launch the work.
     // That's all we'll do with this compute pipeline.
     // This will record the compute pipeline work into 'encoder'.
     computeEncoder.end();
   // After the compute shader completes, copy the gpuBuffer to outputBuffer
   encoder.copyBufferToBuffer(gpuBuffer, 0, outputBuffer, 0, bufSize);
   // And those are all the commands.
-  const commands = encoder.finish({label: "doubler"});
+  const commands = encoder.finish({label: "f16divider"});
 
   // All the preparatory and potentially slow work has been done.
   // Now submit the recorded commands.  This is can go into an inner loop.
@@ -166,16 +144,17 @@
   await device.queue.onSubmittedWorkDone();
 
   // Get a view into the output buffer, as an array of 32-bit floats.
-  const out = new Float32Array(outputBuffer.getMappedRange());
+  const mapped = outputBuffer.getMappedRange();
+  const outFloat = new Float32Array(mapped);
+  const outInt = new Uint32Array(mapped);
 
   // Show the outputs.
   write("Finished. Here are some outputs:");
-  write(`[0]: ${out[0]}`);
-  write(`[1]: ${out[1]}`);
-  write(`[2]: ${out[2]}`);
-  write(`[3]: ${out[3]}`);
-  write(`[N-2]: ${out[N-2]}`);
-  write(`[N-1]: ${out[N-1]}`);
+
+  for (let i=0; i < iters; i++) {
+    write(`[${i}]: 0x${outInt[i].toString(16)} ${outFloat[i]}`);
+  }
+  outputBuffer.unmap();
 
   device.destroy();
     </script>
