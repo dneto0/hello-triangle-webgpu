@@ -1,15 +1,5 @@
 <!DOCTYPE html>
-<head><title>Hello Array - WebGPU</title></head>
-<!--body onpageshow="setup()" onpagehide="teardown()"-->
-<body>
-  See also <ul>
-  <li> <a href="hello-array.html">Hello array</a><br/>
-  <li> <a href="hello-f16.html">Hello f16</a><br/>
-  <li> <a href="hello-cos.html">Hello cos (high performance)</a><br/>
-  <li> <a href="hello-cos-low-power.html">Hello cos (low power)</a><br/>
-  </ul>
-  <p>
-  <hr>
+<head><title>Hello Array - WebGPU</title>
 <script type='module'>
   document.ctx = {
     device: undefined,
@@ -18,6 +8,8 @@
     outputBuffer: undefined,
     pipeline: undefined,
     bindGroup: undefined,
+    info: undefined,
+    preference: undefined,
   }
 
   function clear() {
@@ -30,17 +22,18 @@
   const iters = 5;
   const bufSize = iters * 4;
 
-  export const setup = async () => {
+  document.setup = async () => {
     const ctx = document.ctx;
     // Check for WebGPU support first by seeing if navigator.gpu exists.
     if (!navigator.gpu) {
-      write('<b>This browser does not support WebGPU.</b>');
+      write('<b>This browser does not support WebGPU.</b>Thanks for trying!');
       document.body.replaceChild(errorMessage, canvas);
     }
+    ctx.preference = document.URL.includes('low-power') ? 'low-power' : 'high-performance';
 
     // WebGPU apps start by getting an Adapter, which represents a physical GPU.
-    const adapter = await navigator.gpu.requestAdapter({powerPreference: "high-performance"});
-    const info = await adapter.requestAdapterInfo();
+    const adapter = await navigator.gpu.requestAdapter({powerPreference: ctx.preference});
+    ctx.info = await adapter.requestAdapterInfo();
 
     ctx.device = await adapter.requestDevice();
 
@@ -100,11 +93,19 @@
     });
     console.log("setup end");
     console.log(ctx);
+    document.run();
   };
 
   document.run = async () => {
     clear();
+    write("Please send the text below the line in an email to dneto@google.com. Thanks!<hr>");
     const ctx = document.ctx;
+
+    write("vendor:       " + ctx.info.vendor);
+    write("architecture: " + ctx.info.architecture);
+    write("description:  " + ctx.info.description);
+    write("device:       " + ctx.info.device);
+    write("preference:   " + ctx.preference);
 
     // Write the input value.
     await ctx.inputBuffer.mapAsync(GPUMapMode.WRITE);
@@ -112,11 +113,10 @@
 
     const inputStr = document.getElementById("input").value;
     input[0] = Number(inputStr);
-    write(`input[0]: ${input[0]} '${inputStr}'`);
+    //write(`input[0]: ${input[0]} '${inputStr}'`);
 
     // Unmap the input buffer from CPU's memory, so it can be used exclusively by the GPU.
     ctx.inputBuffer.unmap();
-
 
     // Now record the commands to actually do the work.
     const encoder = ctx.device.createCommandEncoder();
@@ -152,7 +152,7 @@
     const outInt = new Uint32Array(mapped);
 
     // Show the outputs.
-    write("Finished. Here are some outputs:");
+    write("Finished.<br/>Here is the cosine of your number, and the cosine of that, etc.");
 
     for (let i=0; i < iters; i++) {
       write(`[${i}]: 0x${outInt[i].toString(16)} ${outFloat[i]}`);
@@ -164,11 +164,20 @@
     ctx.device.destroy();
   }
 
-  setup();
+  document.setup();
 </script>
+</head>
 
+<body>
+  See also <ul>
+  <li> <a href="hello-array.html">Hello array</a><br/>
+  <li> <a href="hello-f16.html">Hello f16</a><br/>
+  <li> <a href="hello-cos.html">Hello cos (high performance)</a><br/>
+  <li> <a href="hello-cos-low-power.html">Hello cos (low power)</a><br/>
+  </ul>
+  <p>
   Use WebGPU to compute the cosine of a number.
   <p>
-  <input type="number" id="input" value="1.0" onpageshow="setup()" onchange="document.run()"/>
+  <input type="number" id="input" value="2.0" onchange="document.run()"/>
   <div id="target"></div>
   </body>
