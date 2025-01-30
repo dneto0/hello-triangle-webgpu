@@ -31,6 +31,7 @@
     }
 
     const device = await adapter.requestDevice({requiredFeatures: ['subgroups']});
+    write(`Using device vendor '${device.adapterInfo.vendor}', architecture '${device.adapterInfo.architecture}'.`);
 
     const workgroupSize = device.limits.maxComputeWorkgroupSizeX;
     write(`Using workgroupSize = ${workgroupSize} (= device.limits.maxComputeWorkgroupSizeX)`);
