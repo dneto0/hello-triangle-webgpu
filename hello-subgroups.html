@@ -10,8 +10,8 @@
     <li>Inspecting <tt>device.adapterInfo.subgroupMinSize</tt> and
                    <tt>device.adapterInfo.subgroupMaxSize</tt>.
     <li>A shader that uses the <tt>subgroup_invocation_id<tt> and <tt>subgroup_size</tt> builtins.
-    <li>A shader that also uses the <tt>subgroupInclusiveMul</tt> builtin function to compute factorials
-        without reading or writing memory to communicate intermediate results.
+    <li>A shader that also uses the <tt>subgroupExclusiveMul</tt> builtin function to compute factorials
+        of the subgrpup invocation ID, without reading or writing memory to communicate intermediate results.
   </ul>
   <hr>
   <div id="target"></div>
@@ -104,14 +104,15 @@
         //   invocation ID 3 contributes 4
         //   invocation ID 4 contributes 5
         //
-        // Calculate the prefix product, including its own element:
-        //      1                = 1
-        //      1 * 2            = 2
-        //      1 * 2 * 3        = 6
-        //      1 * 2 * 3 * 4    = 24
+        // Calculate the prefix product, excluding its own element:
+        //   ID 0:    1                = 1    == 0!
+        //   ID 1:    1                = 1    == 1!
+        //   ID 2:    1 * 2            = 2    == 2!
+        //   ID 3:    1 * 2 * 3        = 6    == 3!
+        //   ID 4:    1 * 2 * 3 * 4    = 24   == 4!
         //      ...
         // This is all done without reading or writing memory.
-        let result = subgroupInclusiveMul(f32(1 + sid));
+        let result = subgroupExclusiveMul(f32(1 + sid));
 
         // Write to the output.
         factorials_buffer[gid.x] = result;
