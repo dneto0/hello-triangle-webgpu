@@ -3,6 +3,17 @@
 <body>
   <h1>WebGPU subgroups sample</h1>
   <p>
+  This sample shows:
+  <ul>
+    <li>Checking whether the adapter supports the <tt>subgroups</tt> feature.
+    <li>Requesting a device with the <tt>subgroups</tt> feature on the device.
+    <li>Inspecting <tt>device.adapterInfo.subgroupMinSize</tt> and
+                   <tt>device.adapterInfo.subgroupMaxSize</tt>.
+    <li>A shader that uses the <tt>subgroup_invocation_id<tt> and <tt>subgroup_size</tt> builtins.
+    <li>A shader that also uses the <tt>subgroupInclusiveMul</tt> builtin function to compute factorials
+        without reading or writing memory to communicate intermediate results.
+  </ul>
+  <hr>
   <div id="target"></div>
   <script type='module'>
   function write(s) {
@@ -144,7 +155,7 @@
     let subgroupSize = (new Uint32Array(paramsOutputBuffer.getMappedRange()))[0];
 
     const show_result = ((shaderName, o,subgroupSize) => {
-      write(`<br>Ran '${shaderName}', and got subgroup size = ${subgroupSize}`);
+      write(`<hr>Ran '${shaderName}', and got subgroup size = ${subgroupSize}`);
       write(`The output, grouped into workgroups, and one subgroup per line is:`);
       let line = '';
       for (let i = 0; i < N; i++) {
