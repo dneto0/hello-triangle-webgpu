@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<head><title>WebGPU subgroups sample</title></head>
+<body>
+  <h1>WebGPU subgroups sample</h1>
+  <p>
+  <div id="target"></div>
+  <script type='module'>
+  function write(s) {
+    document.getElementById("target").innerHTML += s + '<br/>';
+  }
+  async function sampleCode() {
+    if (!navigator.gpu) {
+      write('<b>This browser does not support WebGPU.</b>');
+      return;
+    }
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter.features.has("subgroups")) {
+      write("This browser supports WebGPU, but not the '<tt>subgroups</tt>' feature.");
+      return;
+    }
+
+    const device = await adapter.requestDevice({requiredFeatures: ['subgroups']});
+
+    const workgroupSize = device.limits.maxComputeWorkgroupSizeX;
+    write(`Using workgroupSize = ${workgroupSize} (= device.limits.maxComputeWorkgroupSizeX)`);
+
+    const subgroupMinSize = device.adapterInfo.subgroupMinSize;
+    write(` device.adapterInfo.subgroupMinSize = ${subgroupMinSize}`);
+    const subgroupMaxSize = device.adapterInfo.subgroupMaxSize;
+    write(` device.adapterInfo.subgroupMaxSize = ${subgroupMaxSize}`);
+
+    const numWorkgroups = 2; // Show at least 2 workgroups.
+    const N = numWorkgroups * workgroupSize;
+
+    const bytes_per_elem = 4; // 32-bit floats take up 4 bytes each
+    const bufSize = bytes_per_elem * N;
+
+    const gpuBuffer = device.createBuffer({
+      size: bufSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    // Create a buffer to copy the output to.
+    const outputBuffer = device.createBuffer({
+      size: bufSize,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+
+    const paramsBufSize = 4; // One u32
+    const paramsGpuBuffer = device.createBuffer({
+      size: paramsBufSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    const paramsOutputBuffer = device.createBuffer({
+      size: paramsBufSize,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+
+    // Here's the compute shader.
+    const shader = device.createShaderModule({code: `
+      enable subgroups;
+
+      struct Params {
+        subgroup_size: u32
+      }
+      @group(0) @binding(0) var<storage,read_write> ids_buffer: array<u32>;
+      @group(0) @binding(1) var<storage,read_write> params: Params;
+
+      override workgroupSize: u32;
+
+      @compute @workgroup_size(workgroupSize)
+      fn my_subgroup_id(
+          @builtin(global_invocation_id) gid: vec3u,
+          @builtin(subgroup_invocation_id) sid: u32,
+          @builtin(subgroup_size) ssize: u32) {
+        ids_buffer[gid.x] = sid;
+        if gid.x == 0 { // avoid a data race.
+          params.subgroup_size = ssize;
+        }
+      }
+
+      @group(0) @binding(0) var<storage,read_write> factorials_buffer: array<f32>;
+      @compute @workgroup_size(workgroupSize)
+      fn simple_factorial(
+          @builtin(global_invocation_id) gid: vec3u,
+          @builtin(subgroup_invocation_id) sid: u32,
+          @builtin(subgroup_size) ssize: u32) {
+        
+        // Each invocation contributes 1 + its subgroup ID, so:
+        //   invocation ID 0 contributes 1
+        //   invocation ID 1 contributes 2
+        //   invocation ID 2 contributes 3
+        //   invocation ID 3 contributes 4
+        //   invocation ID 4 contributes 5
+        //
+        // Calculate the prefix product, including its own element:
+        //      1                = 1
+        //      1 * 2            = 2
+        //      1 * 2 * 3        = 6
+        //      1 * 2 * 3 * 4    = 24
+        //      ...
+        // This is all done without reading or writing memory.
+        let result = subgroupInclusiveMul(f32(1 + sid));
+
+        // Write to the output.
+        factorials_buffer[gid.x] = result;
+        if gid.x == 0 { // avoid a data race.
+          params.subgroup_size = ssize;
+        }
+      }
+
+    `});
+    let pipeline = device.createComputePipeline({
+      layout: "auto",
+      compute: {
+        module: shader,
+        entryPoint: 'my_subgroup_id',
+        constants: {workgroupSize}
+      }
+    });
+    let bindGroup = device.createBindGroup({
+     layout: pipeline.getBindGroupLayout(0),
+     entries: [
+       {binding: 0, resource: {buffer: gpuBuffer}},
+       {binding: 1, resource: {buffer: paramsGpuBuffer}}
+     ],
+    });
+
+    let encoder = device.createCommandEncoder();
+    let computeEncoder = encoder.beginComputePass();
+      computeEncoder.setPipeline(pipeline);
+      computeEncoder.setBindGroup(0, bindGroup);
+      computeEncoder.dispatchWorkgroups(numWorkgroups);
+      computeEncoder.end();
+    encoder.copyBufferToBuffer(gpuBuffer, 0, outputBuffer, 0, bufSize);
+    encoder.copyBufferToBuffer(paramsGpuBuffer, 0, paramsOutputBuffer, 0, paramsBufSize);
+    let commands = encoder.finish({label: "get subgroup id"});
+
+    device.queue.submit([commands]);
+    outputBuffer.mapAsync(GPUMapMode.READ);
+    paramsOutputBuffer.mapAsync(GPUMapMode.READ);
+    await device.queue.onSubmittedWorkDone();
+
+    let outputs = new Uint32Array(outputBuffer.getMappedRange());
+    let subgroupSize = (new Uint32Array(paramsOutputBuffer.getMappedRange()))[0];
+
+    const show_result = ((shaderName, o,subgroupSize) => {
+      write(`<br>Ran '${shaderName}', and got subgroup size = ${subgroupSize}`);
+      write(`The output, grouped into workgroups, and one subgroup per line is:`);
+      let line = '';
+      for (let i = 0; i < N; i++) {
+        if ((i % workgroupSize) == 0) {
+           line += `<br>workgroup ${i / workgroupSize}:`;
+        }
+        if ((i % subgroupSize) == 0) {
+           line += `<br>&nbsp;&nbsp;${i}:  `;
+        }
+        line += ` ${o[i]}`;
+      }
+      write(line);
+    });
+    show_result('my_subgroup_id', outputs, subgroupSize);
+    outputBuffer.unmap();
+    paramsOutputBuffer.unmap();
+
+    // Now do the factorial.
+    pipeline = device.createComputePipeline({
+      layout: "auto",
+      compute: {
+        module: shader,
+        entryPoint: 'simple_factorial',
+        constants: {workgroupSize}
+      }
+    });
+
+    bindGroup = device.createBindGroup({
+     layout: pipeline.getBindGroupLayout(0),
+     entries: [
+       {binding: 0, resource: {buffer: gpuBuffer}},
+       {binding: 1, resource: {buffer: paramsGpuBuffer}}
+     ],
+    });
+
+    encoder = device.createCommandEncoder();
+    computeEncoder = encoder.beginComputePass();
+      computeEncoder.setPipeline(pipeline);
+      computeEncoder.setBindGroup(0, bindGroup);
+      computeEncoder.dispatchWorkgroups(numWorkgroups);
+      computeEncoder.end();
+    encoder.copyBufferToBuffer(gpuBuffer, 0, outputBuffer, 0, bufSize);
+    encoder.copyBufferToBuffer(paramsGpuBuffer, 0, paramsOutputBuffer, 0, paramsBufSize);
+    commands = encoder.finish({label: "simple factorial"});
+
+    device.queue.submit([commands]);
+    outputBuffer.mapAsync(GPUMapMode.READ);
+    paramsOutputBuffer.mapAsync(GPUMapMode.READ);
+    await device.queue.onSubmittedWorkDone();
+
+    outputs = new Float32Array(outputBuffer.getMappedRange());
+    subgroupSize = (new Uint32Array(paramsOutputBuffer.getMappedRange()))[0];
+    show_result('simple_factorial', outputs, subgroupSize);
+    outputBuffer.unmap();
+    paramsOutputBuffer.unmap();
+
+    device.destroy();
+  }
+  sampleCode();
+    </script>
+  </body>
